@@ -1,6 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
-import { deleteFile, getFile, updatFile, uploadFile } from "../controller/file-store";
+import {  deleteFile, getFile, updatFile, uploadFile } from "../controller/file-store";
 
 const router = Router();
 const upload = multer();

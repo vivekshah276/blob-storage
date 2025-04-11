@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import path from "path";
 import {
   BlobSASPermissions,
   BlobServiceClient,
@@ -15,11 +16,6 @@ const blobServiceClient = BlobServiceClient.fromConnectionString(
   config.azureStorageConnectionString
 );
 
-//get the client for specific container in blob storage
-const containerClient = blobServiceClient.getContainerClient(
-  config.azureContainerName
-);
-
 //upload the file in blob storage
 export const uploadFile = async (
   req: Request,
@@ -30,6 +26,15 @@ export const uploadFile = async (
       res.status(400).json({ message: "No file found" });
       return;
     }
+
+    const extension = path
+      .extname(req.file?.originalname)
+      .replace(".", "")
+      .toLowerCase();
+    const containerName = extension;
+    const containerClient = blobServiceClient.getContainerClient(containerName);
+
+    await containerClient.createIfNotExists();
 
     const blobName = req.file?.originalname as string;
     const blockBlobClient = containerClient.getBlockBlobClient(blobName);
@@ -64,8 +69,20 @@ export const updatFile = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    const oldExt = path.extname(oldfilename).replace(".", "").toLowerCase();
+    const newExt = path
+      .extname(req.file.originalname)
+      .replace(".", "")
+      .toLowerCase();
+
+    const newContainerName = newExt;
+    const newContainerClient =
+      blobServiceClient.getContainerClient(newContainerName);
+
+    await newContainerClient.createIfNotExists();
+
     const newFileName = req.file.originalname;
-    const newBlobClient = containerClient.getBlockBlobClient(newFileName);
+    const newBlobClient = newContainerClient.getBlockBlobClient(newFileName);
     const stream = Readable.from(req.file.buffer);
 
     // Upload new file
@@ -77,8 +94,11 @@ export const updatFile = async (req: Request, res: Response): Promise<void> => {
     });
 
     // Delete old file
-    const oldBlobClient = containerClient.getBlockBlobClient(oldfilename);
-    await oldBlobClient.deleteIfExists();
+    const oldContainerName = oldExt;
+    const oldContainerClient =
+      blobServiceClient.getContainerClient(oldContainerName);
+    const oldBlobClient = oldContainerClient.getBlockBlobClient(oldfilename);
+    const response = await oldBlobClient.deleteIfExists();
 
     res.status(200).json({
       success: true,
@@ -94,37 +114,49 @@ export const updatFile = async (req: Request, res: Response): Promise<void> => {
 
 // get the file
 export const getFile = async (req: Request, res: Response): Promise<void> => {
-  const containerName = config.azureContainerName;
   const accountName = process.env.ACCOUNT_NAME as string;
   const accountKey = process.env.AccountKey as string;
+
   const sharedKeyCredential = new StorageSharedKeyCredential(
     accountName,
     accountKey
   );
 
   try {
-    const files: { name: string; url: string }[] = [];
+    const files: { name: string; url: string; container: string }[] = [];
     const expiresOn = new Date(new Date().valueOf() + 60 * 60 * 1000); // valid for 1 hour
 
-    for await (const blob of containerClient.listBlobsFlat()) {
-      const sasToken = generateBlobSASQueryParameters(
-        {
-          containerName,
-          blobName: blob.name,
-          permissions: BlobSASPermissions.parse("r"),
-          expiresOn,
-        },
-        sharedKeyCredential
-      ).toString();
+    // List all containers
+    for await (const container of blobServiceClient.listContainers()) {
+      const containerName = container.name;
+      const containerClient =
+        blobServiceClient.getContainerClient(containerName);
 
-      const url = `https://${accountName}.blob.core.windows.net/${containerName}/${blob.name}?${sasToken}`;
+      // List blobs inside each container
+      for await (const blob of containerClient.listBlobsFlat()) {
+        const sasToken = generateBlobSASQueryParameters(
+          {
+            containerName,
+            blobName: blob.name,
+            permissions: BlobSASPermissions.parse("r"),
+            expiresOn,
+          },
+          sharedKeyCredential
+        ).toString();
 
-      files.push({ name: blob.name, url });
+        const url = `https://${accountName}.blob.core.windows.net/${containerName}/${blob.name}?${sasToken}`;
+
+        files.push({
+          name: blob.name,
+          url,
+          container: containerName, // added container info
+        });
+      }
     }
 
     res.status(200).json({
       success: true,
-
+      count: files.length,
       files: files,
     });
   } catch (err) {
@@ -132,12 +164,19 @@ export const getFile = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
+
 //delete the file from the blob storage
 export const deleteFile = async (
   req: Request,
   res: Response
 ): Promise<void> => {
   try {
+    const extension = path
+      .extname(req.params.filename)
+      .replace(".", "")
+      .toLowerCase();
+    const containerName = extension;
+    const containerClient = blobServiceClient.getContainerClient(containerName);
     const blobClient = containerClient.getBlobClient(req.params.filename);
 
     const deleteResponse = await blobClient.deleteIfExists();
