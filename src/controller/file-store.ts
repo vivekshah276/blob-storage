@@ -9,10 +9,7 @@ import {
 } from "@azure/storage-blob";
 import config from "../config";
 import { Readable } from "stream";
-import dotenv from "dotenv";
 import { Files } from "../models/files";
-
-dotenv.config();
 
 //connect the app to azure storage account
 const blobServiceClient = BlobServiceClient.fromConnectionString(
@@ -181,8 +178,8 @@ export const updatFile = async (req: Request, res: Response): Promise<void> => {
 
 // get the file
 export const getFile = async (req: Request, res: Response): Promise<void> => {
-  const accountName = process.env.ACCOUNT_NAME as string;
-  const accountKey = process.env.AccountKey as string;
+  const accountName = config.accountName;
+  const accountKey = config.accountKey;
 
   const sharedKeyCredential = new StorageSharedKeyCredential(
     accountName,
