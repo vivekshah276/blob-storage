@@ -4,6 +4,7 @@ import path from "path";
 import {
   BlobSASPermissions,
   BlobServiceClient,
+  ContainerClient,
   generateBlobSASQueryParameters,
   StorageSharedKeyCredential,
 } from "@azure/storage-blob";
@@ -225,6 +226,56 @@ export const getFile = async (req: Request, res: Response): Promise<void> => {
     });
   } catch (err) {
     res.status(500).json({ message: "Error listing blobs", error: err });
+  }
+};
+
+//get single file
+export const getSingleFile = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  const accountName = config.accountName;
+  const accountKey = config.accountKey;
+
+  const sharedKeyCredential = new StorageSharedKeyCredential(
+    accountName,
+    accountKey
+  );
+  try {
+    const extension = path
+      .extname(req.params.filename)
+      .replace(".", "")
+      .toLowerCase();
+    const containerName = extension;
+    const containerClient = blobServiceClient.getContainerClient(containerName);
+    const blobClient = containerClient.getBlobClient(req.params.filename);
+
+    const userFiles = await Files.findOne({
+      where: { userId, blob_name: req.params.filename },
+    });
+    if (!userFiles) {
+      res.status(404).json({ message: "File not Found" });
+      return;
+    }
+
+    const expiresOn = new Date(new Date().valueOf() + 60 * 60 * 1000); // 1 hour expiry
+
+    const sasToken = generateBlobSASQueryParameters(
+      {
+        containerName: userFiles.container_name,
+        blobName: userFiles.blob_name,
+        permissions: BlobSASPermissions.parse("r"),
+        expiresOn,
+      },
+      sharedKeyCredential
+    ).toString();
+    const url = `${blobClient.url}?${sasToken}`;
+
+    res.status(200).json({ success: true, file: userFiles, url: url });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ success: false, message: "Server Error", error: err });
   }
 };
 
