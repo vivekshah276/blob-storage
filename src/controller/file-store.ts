@@ -17,7 +17,7 @@ const blobServiceClient = BlobServiceClient.fromConnectionString(
   config.azureStorageConnectionString
 );
 
-const userId = 223;
+const userId = 2123;
 
 //upload the file in blob storage
 export const uploadFile = async (
@@ -30,11 +30,7 @@ export const uploadFile = async (
       return;
     }
 
-    const extension = path
-      .extname(req.file?.originalname)
-      .replace(".", "")
-      .toLowerCase();
-    const containerName = extension;
+    const containerName = `user-${userId}`;
     const containerClient = blobServiceClient.getContainerClient(containerName);
 
     await containerClient.createIfNotExists();
@@ -101,23 +97,13 @@ export const updatFile = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const oldExt = path.extname(oldfilename).replace(".", "").toLowerCase();
-    const newExt = path
-      .extname(req.file.originalname)
-      .replace(".", "")
-      .toLowerCase();
-
-    const newContainerName = newExt;
-    const newContainerClient =
-      blobServiceClient.getContainerClient(newContainerName);
-
-    await newContainerClient.createIfNotExists();
-
+    const containerName = `user-${userId}`;
+    const containerClient = blobServiceClient.getContainerClient(containerName);
     const originalFilename = req.file.originalname;
     const newFileName = `${userId}-${uuidv4()}-${
       req.file?.originalname
     }` as string;
-    const newBlobClient = newContainerClient.getBlockBlobClient(newFileName);
+    const blobClient = containerClient.getBlockBlobClient(newFileName);
 
     //if new file is already exist it will abort
     const existingFile = await Files.findOne({
@@ -139,7 +125,7 @@ export const updatFile = async (req: Request, res: Response): Promise<void> => {
     const stream = Readable.from(req.file.buffer);
 
     // Upload new file
-    await newBlobClient.uploadStream(stream, undefined, undefined, {
+    await blobClient.uploadStream(stream, undefined, undefined, {
       blobHTTPHeaders: {
         blobContentType: req.file.mimetype,
         blobContentDisposition: "inline",
@@ -147,10 +133,8 @@ export const updatFile = async (req: Request, res: Response): Promise<void> => {
     });
 
     // Delete old file
-    const oldContainerName = oldExt;
-    const oldContainerClient =
-      blobServiceClient.getContainerClient(oldContainerName);
-    const oldBlobClient = oldContainerClient.getBlockBlobClient(oldfilename);
+
+    const oldBlobClient = containerClient.getBlockBlobClient(oldfilename);
     const response = await oldBlobClient.deleteIfExists();
 
     const file = await Files.findOne({
@@ -160,7 +144,6 @@ export const updatFile = async (req: Request, res: Response): Promise<void> => {
       res.status(400).json({ message: "No file found" });
       return;
     }
-    file.container_name = newContainerName;
     file.blob_name = newFileName;
     file.original_file_name = originalFilename;
     file.save();
@@ -179,8 +162,8 @@ export const updatFile = async (req: Request, res: Response): Promise<void> => {
 
 // get the file
 export const getFile = async (req: Request, res: Response): Promise<void> => {
-  const accountName = config.accountName;
-  const accountKey = config.accountKey;
+  const accountName = process.env.ACCOUNT_NAME as string;
+  const accountKey = process.env.AccountKey as string;
 
   const sharedKeyCredential = new StorageSharedKeyCredential(
     accountName,
@@ -188,41 +171,43 @@ export const getFile = async (req: Request, res: Response): Promise<void> => {
   );
 
   try {
-    const userFiles = await Files.findAll({ where: { userId } });
-    const expiresOn = new Date(new Date().valueOf() + 60 * 60 * 1000); // 1 hour expiry
+    const files: { name: string; url: string; container: string }[] = [];
+    const expiresOn = new Date(new Date().valueOf() + 60 * 60 * 1000); // valid for 1 hour
 
-    const filesWithUrls = await Promise.all(
-      userFiles.map(async (file) => {
-        const containerClient = blobServiceClient.getContainerClient(
-          file.container_name
-        );
-        const blobClient = containerClient.getBlobClient(file.blob_name);
+    const containerName = `user-${userId}`;
+    const containerClient = blobServiceClient.getContainerClient(containerName);
 
-        const sasToken = generateBlobSASQueryParameters(
-          {
-            containerName: file.container_name,
-            blobName: file.blob_name,
-            permissions: BlobSASPermissions.parse("r"),
-            expiresOn,
-          },
-          sharedKeyCredential
-        ).toString();
+    const exist = await containerClient.exists();
+    if (!exist) {
+      res.status(400).json({ message: "No Container found" });
+      return;
+    }
 
-        const url = `${blobClient.url}?${sasToken}`;
-        return {
-          id: file.id,
-          original_file_name: file.original_file_name,
-          blob_name: file.blob_name,
-          container: file.container_name,
-          url,
-        };
-      })
-    );
+    // List blobs inside each container
+    for await (const blob of containerClient.listBlobsFlat()) {
+      const sasToken = generateBlobSASQueryParameters(
+        {
+          containerName,
+          blobName: blob.name,
+          permissions: BlobSASPermissions.parse("r"),
+          expiresOn,
+        },
+        sharedKeyCredential
+      ).toString();
+
+      const url = `https://${accountName}.blob.core.windows.net/${containerName}/${blob.name}?${sasToken}`;
+
+      files.push({
+        name: blob.name,
+        url,
+        container: containerName, // added container info
+      });
+    }
 
     res.status(200).json({
       success: true,
-      count: filesWithUrls.length,
-      files: filesWithUrls,
+      count: files.length,
+      files: files,
     });
   } catch (err) {
     res.status(500).json({ message: "Error listing blobs", error: err });
@@ -242,11 +227,7 @@ export const getSingleFile = async (
     accountKey
   );
   try {
-    const extension = path
-      .extname(req.params.filename)
-      .replace(".", "")
-      .toLowerCase();
-    const containerName = extension;
+    const containerName = `user-${userId}`;
     const containerClient = blobServiceClient.getContainerClient(containerName);
     const blobClient = containerClient.getBlobClient(req.params.filename);
 
@@ -285,11 +266,7 @@ export const deleteFile = async (
   res: Response
 ): Promise<void> => {
   try {
-    const extension = path
-      .extname(req.params.filename)
-      .replace(".", "")
-      .toLowerCase();
-    const containerName = extension;
+    const containerName = `user-${userId}`;
     const containerClient = blobServiceClient.getContainerClient(containerName);
     const blobClient = containerClient.getBlobClient(req.params.filename);
 
